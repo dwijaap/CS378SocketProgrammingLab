@@ -57,7 +57,7 @@ public class ON {
         InetAddress localAddress = InetAddress.getLocalHost();
 
         ServerSocket serverSocket = new ServerSocket(TCP_PORT, 30, localAddress);
-        System.out.println("Server Info:\nTCP Port: " + TCP_PORT + "IP: " + localAddress.getHostAddress());
+        System.out.println("Server Info:\nTCP Port: " + TCP_PORT + "\nIP: " + localAddress.getHostAddress());
 
         char id = 'A';
         for (int i = 0; i < nodeCount; i++) {
