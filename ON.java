@@ -104,8 +104,30 @@ public class ON {
         }
 
         List<String> lines = Files.readAllLines(Paths.get(file));
+        List<String> useful = new ArrayList<String>();
+        for(String l : lines){
+            l = l.trim();
+            if(l.isEmpty() || l.startsWith("#"))
+                continue;
+            useful.add(l);
+        }
+        nodeCount = useful.size() + 1;
+        if(nodeCount > MAX_NODES){
+            throw new IOException("More than 26 nodes not allowed");
+        }
 
-        
+        for(int i = 0 ; i <useful.size() ; i++){
+            String[] costs = useful.get(i).split("\\s+");
+            for(int j = 0; j< costs.length ; j++){
+                int cost = Integer.parseInt(costs[j]);
+
+                if((i+j+1)>= nodeCount){
+                    throw new IOException("Invalid config file, length of graph not matching.");
+                }
+                graph[i][i+j+1] = cost;
+                graph[i+j+1][i] = cost;
+            }
+        }
     }
 
     static class ConnectionInfo {
