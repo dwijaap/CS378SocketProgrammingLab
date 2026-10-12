@@ -94,39 +94,54 @@ public class ON {
         }
     }
 
-    static void readConfig(String file) throws IOException{
-        for(int i = 0; i < MAX_NODES ; i++){
-            for(int j = 0; j <MAX_NODES ; j++){
+    static void readConfig(String file) throws IOException {
+        for (int i = 0; i < MAX_NODES; i++) {
+            for (int j = 0; j < MAX_NODES; j++) {
                 graph[i][j] = -1;
-                if(i==j)
+                if (i == j)
                     graph[i][j] = 0;
             }
         }
 
         List<String> lines = Files.readAllLines(Paths.get(file));
         List<String> useful = new ArrayList<String>();
-        for(String l : lines){
+        for (String l : lines) {
             l = l.trim();
-            if(l.isEmpty() || l.startsWith("#"))
+            if (l.isEmpty() || l.startsWith("#"))
                 continue;
             useful.add(l);
         }
         nodeCount = useful.size() + 1;
-        if(nodeCount > MAX_NODES){
+        if (nodeCount > MAX_NODES) {
             throw new IOException("More than 26 nodes not allowed");
         }
 
-        for(int i = 0 ; i <useful.size() ; i++){
+        for (int i = 0; i < useful.size(); i++) {
             String[] costs = useful.get(i).split("\\s+");
-            for(int j = 0; j< costs.length ; j++){
+            for (int j = 0; j < costs.length; j++) {
                 int cost = Integer.parseInt(costs[j]);
 
-                if((i+j+1)>= nodeCount){
+                if ((i + j + 1) >= nodeCount) {
                     throw new IOException("Invalid config file, length of graph not matching.");
                 }
-                graph[i][i+j+1] = cost;
-                graph[i+j+1][i] = cost;
+                graph[i][i + j + 1] = cost;
+                graph[i + j + 1][i] = cost;
             }
+        }
+
+        printGraph();
+    }
+
+    static void printGraph(){
+        System.out.println();
+
+        System.out.println("Current Graph:");
+
+        for(int i = 0 ; i < nodeCount ; i++){
+            for(int j = i+1 ; j< nodeCount ; j++){
+                System.out.println((char)('A' + i) + "->" + (char)('A' + j) + " = " + graph[i][j] + "\t");
+            }
+            System.out.println();
         }
     }
 
@@ -172,19 +187,62 @@ public class ON {
         }
     }
 
-    static void sendLinkState(int i) throws IOException{
+    static void sendLinkState(int i) throws IOException {
         NodeConnection vn = connections[i];
         ByteArrayOutputStream bodyStr = new ByteArrayOutputStream();
         DataOutputStream body = new DataOutputStream(bodyStr);
 
         body.writeByte(2);
         int tuples = 1;
-        for(int j = 0 ; j < nodeCount ; j++){
-            if(i!=j && graph[i][j] != 0){
+        for (int j = 0; j < nodeCount; j++) {
+            if (i != j && graph[i][j] != 0) {
                 tuples++;
             }
         }
         body.writeByte(tuples);
-        writeTuple(body, nodes[i], )
+
+        body.writeByte((char) ('A' + i));
+        body.writeInt(ipv4toInt(nodes[i].ip));
+        body.writeInt(nodes[i].udpPort);
+        body.writeInt(0);
+
+        for (int j = 0; j < nodeCount; j++) {
+            if (j == i || graph[i][j] <= 0) {
+                continue;
+            }
+            body.writeByte((char) ('A' + j));
+            body.writeInt(ipv4toInt(nodes[j].ip));
+            body.writeInt(nodes[j].udpPort);
+            body.writeInt(graph[i][j]);
+        }
+
+        body.flush();
+        byte[] msg = bodyStr.toByteArray();
+
+        vn.out.writeInt(msg.length);
+        vn.out.write(msg);
+        vn.out.flush();
+
+        System.out.println("Sent Link State to node " + (char)('A'+i));
     }
+
+    static int ipv4toInt(String ip) throws IOException {
+        String parts[] = ip.split("\\.");
+
+        try {
+            int a = Integer.parseInt(parts[0]);
+            int b = Integer.parseInt(parts[1]);
+            int c = Integer.parseInt(parts[2]);
+            int d = Integer.parseInt(parts[3]);
+
+            if (a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255)
+                throw new IOException("Wrong ipv4");
+
+            return (a << 24) | (b << 16) | (c << 8) | d;
+        } catch (NumberFormatException e) {
+            throw new IOException("Wrong ipv4 " + ip, e);
+        }
+    }
+
+
 }
