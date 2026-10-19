@@ -43,7 +43,6 @@ public class ON {
 
     static int[][] graph = new int[MAX_NODES][MAX_NODES];
     static int nodeCount;
-    static NodeInfo[] nodes = new NodeInfo[MAX_NODES];
     static NodeConnection[] connections = new NodeConnection[MAX_NODES];
     static long configChanged = 0;
     static int nextId = 0;
