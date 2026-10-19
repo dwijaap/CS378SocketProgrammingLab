@@ -1,6 +1,10 @@
 import java.net.*;
 import java.io.*;
 import java.nio.*;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
 import java.nio.file.*;
 import java.util.*;
 
@@ -24,15 +28,16 @@ public class ON {
     }
 
     static class NodeConnection {
-        Socket socket;
-        DataInputStream in;
-        DataOutputStream out;
-        NodeInfo node;
+        SocketChannel channel;
+        ByteBuffer inBuffer = ByteBuffer.allocate(4096);
+        SelectionKey key;
+        char id;
+        String ip;
+        int udpPort;
+        boolean conn = false;
 
-        NodeConnection(Socket socket) throws IOException {
-            this.socket = socket;
-            this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
-            this.out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+        NodeConnection(SocketChannel chan) throws IOException {
+            this.channel = chan;
         }
     }
 
@@ -41,8 +46,11 @@ public class ON {
     static NodeInfo[] nodes = new NodeInfo[MAX_NODES];
     static NodeConnection[] connections = new NodeConnection[MAX_NODES];
     static long configChanged = 0;
+    static int nextId = 0;
+    static boolean ready = false;
 
     public static void main(String[] args) throws Exception {
+
         if (args.length != 1) {
             System.out.println("Give config file name as input!");
             return;
@@ -56,42 +64,145 @@ public class ON {
 
         InetAddress localAddress = InetAddress.getLocalHost();
 
-        ServerSocket serverSocket = new ServerSocket(TCP_PORT, 30, localAddress);
+        Selector sel = Selector.open();
+        ServerSocketChannel server = ServerSocketChannel.open();
+        server.setOption(StandardSocketOptions.SO_REUSEADDR, true);
+        server.bind(new InetSocketAddress(TCP_PORT), 30);
+        server.configureBlocking(false);
+        server.register(sel, SelectionKey.OP_ACCEPT);
+
         System.out.println("Server Info:\nTCP Port: " + TCP_PORT + "\nIP: " + localAddress.getHostAddress());
 
-        char id = 'A';
-        for (int i = 0; i < nodeCount; i++) {
-            Socket socket = serverSocket.accept();
-            System.out.println("TCP connection accepted for " + id + " node." +
-                    "\n\tIP: " + socket.getInetAddress().getHostAddress());
+        try {
+            while (true) {
+                sel.select(1000);
 
-            NodeConnection vn = new NodeConnection(socket);
-            ConnectionInfo conInf = readConnection(vn.in);
+                Iterator<SelectionKey> it = sel.selectedKeys().iterator();
 
-            System.out.println("Connection for " + id + " - IP: " + conInf.ip + " UDP: " + conInf.udpPort);
+                while (it.hasNext()) {
+                    SelectionKey k = it.next();
+                    it.remove();
+                    if (!k.isValid()) {
+                        continue;
+                    }
+                    if (k.isAcceptable()) {
+                        acceptConnection(server, sel);
+                    }
+                    if (k.isReadable()) {
+                        handleRead(k);
+                    }
+                }
 
-            NodeInfo node = new NodeInfo(id, conInf.ip, conInf.udpPort);
-            vn.node = node;
-            nodes[i] = node;
-            connections[i] = vn;
-            id++;
-        }
+                long lastmodified = Files.getLastModifiedTime(Paths.get(configFile)).toMillis();
+                if (lastmodified != configChanged) {
+                    System.out.println("Config file changed!!!!!!!!!!!!!!!!!!!!!!!");
 
-        sendAllLinkStates();
+                    configChanged = lastmodified;
 
-        while (true) {
-            Thread.sleep(1000);
-
-            long lastmodified = Files.getLastModifiedTime(Paths.get(configFile)).toMillis();
-            if (lastmodified != configChanged) {
-                System.out.println("Config file changed!!!!!!!!!!!!!!!!!!!!!!!");
-
-                configChanged = lastmodified;
-
-                readConfig(configFile);
-                sendAllLinkStates();
+                    readConfig(configFile);
+                    if (ready)
+                        sendAllLinkStates();
+                }
             }
+        } finally {
+            if (server != null) {
+                server.close();
+            }
+            sel.close();
+            for (int i = 0; i < nodeCount; i++) {
+                if (connections[i].channel != null)
+                    connections[i].channel.close();
+            }
+            System.out.println("Server Socket Closed!");
         }
+    }
+
+    static void acceptConnection(ServerSocketChannel server, Selector sel) throws IOException {
+        SocketChannel ch = server.accept();
+        if (ch == null)
+            return;
+        if (nextId >= MAX_NODES) {
+            System.out.println("26 nodes already present!");
+            ch.close();
+            return;
+        }
+        ch.configureBlocking(false);
+        connections[nextId] = new NodeConnection(ch);
+        // nodes[nextId] = new NodeInfo( (char)('A'+nextId), null, 0);
+        connections[nextId].id = (char) (nextId + 'A');
+        connections[nextId].key = ch.register(sel, SelectionKey.OP_READ, connections[nextId]);
+
+        if (nextId < nodeCount) {
+            System.out.println("TCP Connection accepted for " + (char) (nextId + 'A') + ".");
+        } else {
+            System.out.println("TCP connection accepted for isolated island " + (char) (nextId + 'A') + ".");
+        }
+
+        nextId++;
+    }
+
+    static void handleRead(SelectionKey key) {
+        NodeConnection nc = (NodeConnection) key.attachment();
+
+        try {
+            int n = nc.channel.read(nc.inBuffer);
+            if (n < 0) {
+                closeConnection(nc);
+                return;
+            }
+
+            nc.inBuffer.flip();
+            while (nc.inBuffer.remaining() >= 4) {
+                int len = nc.inBuffer.getInt(nc.inBuffer.position());
+
+                if (len <= 0 || len > 1024) {
+                    throw new IOException("Bad frame length");
+                }
+
+                // wait for the remaining message
+                if (nc.inBuffer.remaining() < 4 + len) {
+                    break;
+                }
+
+                nc.inBuffer.getInt();
+                byte[] body = new byte[len];
+                nc.inBuffer.get(body);
+                ConnectionInfo inf = readConnection(body);
+                nc.ip = inf.ip;
+                nc.udpPort = inf.udpPort;
+                nc.conn = true;
+                System.out.println("Connected VN " + nc.id + " on udp port " + nc.udpPort + " ip : " + nc.ip);
+
+                if (!ready && allConnected()) {
+                    ready = true;
+                    sendAllLinkStates();
+                } else if (ready) {
+                    sendLinkState((nc.id - 'A'));
+                }
+            }
+            nc.inBuffer.compact();
+        } catch (IOException e) {
+            System.out.println("Error on node : " + nc.id + " : " + e.getMessage());
+            closeConnection(nc);
+        }
+    }
+
+    static void closeConnection(NodeConnection nc) {
+        System.out.println("Node Disconnected " + nc.id);
+        nc.key.cancel();
+        try {
+            nc.channel.close();
+        } catch (IOException e) {
+        }
+        connections[nc.id - 'A'] = null;
+    }
+
+    static boolean allConnected(){
+        for(int i = 0 ; i<nodeCount ; i++){
+            if(connections[i]==null || connections[i].conn == false)
+                return false;
+        }
+        return true;
     }
 
     static void readConfig(String file) throws IOException {
@@ -132,14 +243,14 @@ public class ON {
         printGraph();
     }
 
-    static void printGraph(){
+    static void printGraph() {
         System.out.println();
 
         System.out.println("Current Graph:");
 
-        for(int i = 0 ; i < nodeCount ; i++){
-            for(int j = i+1 ; j< nodeCount ; j++){
-                System.out.println((char)('A' + i) + "->" + (char)('A' + j) + " = " + graph[i][j] + "\t");
+        for (int i = 0; i < nodeCount; i++) {
+            for (int j = i + 1; j < nodeCount; j++) {
+                System.out.println((char) ('A' + i) + "->" + (char) ('A' + j) + " = " + graph[i][j] + "\t");
             }
             System.out.println();
         }
@@ -155,14 +266,13 @@ public class ON {
         }
     }
 
-    static ConnectionInfo readConnection(DataInputStream in) throws IOException {
-        int length = in.readInt();
+    static ConnectionInfo readConnection(byte[] in) throws IOException {
+        int length = in.length;
         if (length != 9) {
             throw new IOException("Not Connection message , wrong length");
         }
-        byte[] body = new byte[length];
-        in.readFully(body);
-        ByteBuffer bytebuff = ByteBuffer.wrap(body).order(ByteOrder.BIG_ENDIAN);
+
+        ByteBuffer bytebuff = ByteBuffer.wrap(in).order(ByteOrder.BIG_ENDIAN);
 
         byte type = bytebuff.get();
         if (type != 1) {
@@ -178,7 +288,7 @@ public class ON {
     }
 
     static void sendAllLinkStates() {
-        for (int i = 0; i < nodeCount; i++) {
+        for (int i = 0; i < nextId; i++) {
             try {
                 sendLinkState(i);
             } catch (IOException e) {
@@ -188,22 +298,22 @@ public class ON {
     }
 
     static void sendLinkState(int i) throws IOException {
-        NodeConnection vn = connections[i];
+        NodeConnection nc = connections[i];
         ByteArrayOutputStream bodyStr = new ByteArrayOutputStream();
         DataOutputStream body = new DataOutputStream(bodyStr);
 
         body.writeByte(2);
         int tuples = 1;
         for (int j = 0; j < nodeCount; j++) {
-            if (i != j && graph[i][j] != 0) {
+            if (i != j && graph[i][j] > 0) {
                 tuples++;
             }
         }
         body.writeByte(tuples);
 
         body.writeByte((char) ('A' + i));
-        body.writeInt(ipv4toInt(nodes[i].ip));
-        body.writeInt(nodes[i].udpPort);
+        body.writeInt(ipv4toInt(nc.ip));
+        body.writeInt(nc.udpPort);
         body.writeInt(0);
 
         for (int j = 0; j < nodeCount; j++) {
@@ -211,19 +321,25 @@ public class ON {
                 continue;
             }
             body.writeByte((char) ('A' + j));
-            body.writeInt(ipv4toInt(nodes[j].ip));
-            body.writeInt(nodes[j].udpPort);
+            body.writeInt(ipv4toInt(nc.ip));
+            body.writeInt(nc.udpPort);
             body.writeInt(graph[i][j]);
         }
 
         body.flush();
         byte[] msg = bodyStr.toByteArray();
 
-        vn.out.writeInt(msg.length);
-        vn.out.write(msg);
-        vn.out.flush();
+        ByteBuffer buf = ByteBuffer.allocate(4 + msg.length);
 
-        System.out.println("Sent Link State to node " + (char)('A'+i));
+        buf.putInt(msg.length);
+        buf.put(msg);
+        buf.flip();
+
+        while(buf.hasRemaining()){
+            nc.channel.write(buf);
+        }
+
+        System.out.println("Sent Link State to node " + (char) ('A' + i));
     }
 
     static int ipv4toInt(String ip) throws IOException {
@@ -243,6 +359,5 @@ public class ON {
             throw new IOException("Wrong ipv4 " + ip, e);
         }
     }
-
 
 }
