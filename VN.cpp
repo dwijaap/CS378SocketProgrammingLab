@@ -461,7 +461,7 @@ int main(int argc, char* argv[]) {
 
         if(ready == 0) {
             // Timeout, can do periodic tasks here if needed.
-            continue;
+            // continue;
         }
 
         if(FD_ISSET(tcpSock, &readfds)) {
