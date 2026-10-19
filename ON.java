@@ -324,8 +324,8 @@ public class ON {
                 continue;
             }
             body.writeByte((char) ('A' + j));
-            body.writeInt(ipv4toInt(nc.ip));
-            body.writeInt(nc.udpPort);
+            body.writeInt(ipv4toInt(connections[j].ip));
+            body.writeInt(connections[j].udpPort);
             body.writeInt(graph[i][j]);
         }
 

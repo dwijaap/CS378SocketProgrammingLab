@@ -80,7 +80,9 @@ void sendLsp() {
     if (!haveConfig || myId < 0) return;
 
     vector<uint8_t> packet = makeLsp();
-    uint32_t seq = mySeq;
+    uint32_t seq = readU32(packet.data() + 1);
+
+    graph[myId].clear();
 
     for(const auto& [id, nb] : neighbors) {
         graph[myId][id] = nb.cost;
@@ -137,8 +139,8 @@ bool handleLsp(const uint8_t* packet, size_t len, const sockaddr_in& sender ) {
 
     if (lastSeqNo[origin] >= static_cast<int64_t>(seq)) {
         // Already seen this or a newer LSP from this origin.
-        return false;
-    }
+    return false;
+}
 
     map<int, int> links;
     size_t pos = 6;
