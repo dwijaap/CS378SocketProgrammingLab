@@ -12,6 +12,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 using namespace std;
 using Clock = chrono::steady_clock;
@@ -36,7 +37,15 @@ static map<int, Neighbor> neighbors;
 static array<map<int, int>, NODE_COUNT> graph; // again for LSP later
 static array<int64_t, NODE_COUNT> lastSeqNo; // again for LSP later
 
+static uint32_t mySeq = 0;
+
 static vector<uint8_t> tcpBuffer; 
+
+static auto lastLspTime = Clock::now();
+static auto lastPrintTime = Clock::now();
+
+static const auto LSP_INTERVAL = chrono::seconds(15);
+static const auto PRINT_INTERVAL = chrono::seconds(10);
 
 static uint32_t readU32(const uint8_t* p) {
     return (uint32_t(p[0]) << 24) |
@@ -50,6 +59,131 @@ static void appendU32(vector<uint8_t>& v, uint32_t x) {
     v.push_back((x >> 16) & 255);
     v.push_back((x >> 8) & 255);
     v.push_back(x & 255);
+}
+
+static vector<uint8_t> makeLsp() {
+    vector<uint8_t> packet;
+
+    packet.push_back(static_cast<uint8_t>('A' + myId)); // 1 byte
+    appendU32(packet, mySeq++); // 4 bytes
+    packet.push_back(static_cast<uint8_t>(neighbors.size())); // 1 byte
+
+    for (const auto& [id, nb] : neighbors) { // Each neighbor entry: 1 byte ID + 4 bytes cost
+        packet.push_back(static_cast<uint8_t>('A' + id));
+        appendU32(packet, static_cast<uint32_t>(nb.cost));
+    }
+
+    return packet;
+}
+
+void sendLsp() {
+    if (!haveConfig || myId < 0) return;
+
+    vector<uint8_t> packet = makeLsp();
+    uint32_t seq = mySeq;
+
+    for(const auto& [id, nb] : neighbors) {
+        graph[myId][id] = nb.cost;
+    }
+
+    lastSeqNo[myId] = seq;
+
+    for(const auto& [id, nb] : neighbors) {
+        ssize_t send = sendto(
+            udpSock,
+            packet.data(),
+            packet.size(),
+            0,
+            reinterpret_cast<const sockaddr*>(&nb.addr),
+            sizeof(nb.addr)
+        );
+
+        if (send < 0) {
+            perror("OH NO!! sendto HAS FAILED");
+        }
+    }
+}
+
+void forwardLsp(const uint8_t* packet, size_t len,
+                const sockaddr_in& sender) {
+    for (const auto& [id, neighbour] : neighbors) {
+        if (neighbour.addr.sin_addr.s_addr == sender.sin_addr.s_addr &&
+            neighbour.addr.sin_port == sender.sin_port) {
+            continue;
+        }
+
+        sendto(udpSock, packet, len, 0,
+               reinterpret_cast<const sockaddr*>(&neighbour.addr),
+               sizeof(neighbour.addr));
+    }
+}
+
+bool handleLsp(const uint8_t* packet, size_t len, const sockaddr_in& sender ) {
+    if (len < 6) return false;
+
+    int origin = packet[0] - 'A';
+    uint32_t seq = readU32(packet + 1);
+    int count = packet[5];
+
+    if (len != 6 + static_cast<size_t>(count) * 5) {
+        cerr << "OH NO WRONG LSP LENGTH\n";
+        return false;
+    }
+
+    if (origin < 0 || origin >= NODE_COUNT) {
+        cerr << "Invalid origin in LSP\n";
+        return false;
+    }
+
+    if (lastSeqNo[origin] >= static_cast<int64_t>(seq)) {
+        // Already seen this or a newer LSP from this origin.
+        return false;
+    }
+
+    map<int, int> links;
+    size_t pos = 6;
+
+    for (int i = 0; i < count; ++i) {
+        int id = packet[pos++] - 'A';
+        uint32_t cost = readU32(packet + pos);
+        pos += 4;
+
+        if (id < 0 || id >= NODE_COUNT) {
+            cerr << "WHAT NEIGHBOUR RE NOT AN ALPHABET\n";
+            return false;
+        }
+
+        links[id] = static_cast<int>(cost);
+    }
+
+    lastSeqNo[origin] = seq;
+    graph[origin] = links;
+
+    cout << "Updated LSP from " << char('A' + origin) << "\n";
+
+    forwardLsp(packet, len, sender);
+
+    return true;
+}
+
+
+
+void receiveLsp() {
+    uint8_t packet[4096];
+    sockaddr_in sender{};
+    socklen_t senderLen = sizeof(sender);
+
+    ssize_t n = recvfrom(
+        udpSock, packet, sizeof(packet), 0,
+        reinterpret_cast<sockaddr*>(&sender), &senderLen
+    );
+
+    if (n < 0) {
+        perror("UDP recvfrom failed.");
+        return;
+    }
+
+    handleLsp(packet, static_cast<size_t>(n), sender);
 }
 
 static bool sendAll(int fd, const uint8_t* data, size_t len) {
@@ -190,6 +324,9 @@ static void handleLinkState(const uint8_t* body, size_t len) {
 
 
     // For LSP later
+
+    sendLsp(); // Send our own LSP to neighbors
+    lastLspTime = Clock::now(); // Reset the LSP timer
 }
 
 static bool processTcpFrames() {
@@ -258,6 +395,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    for(auto & seq : lastSeqNo) seq = -1;
+
     myPort = stoi(argv[3]);
 
     if (myPort < 1 || myPort > 65535) {
@@ -300,22 +439,60 @@ int main(int argc, char* argv[]) {
     cout << "Connected to ON; waiting for LINK-STATE...\n";
 
     while (true) {
-        uint8_t buffer[4096];
+        fd_set readfds;
+        FD_ZERO(&readfds);
 
-        ssize_t n = recv(tcpSock, buffer, sizeof(buffer), 0);
+        FD_SET(tcpSock, &readfds);
+        FD_SET(udpSock, &readfds);
 
-        if(n <= 0) {
-            if(n == 0) {
-                cerr << "ON disconnected\n";
+        int maxFd = max(tcpSock, udpSock);
+
+        timeval timeout{};
+        timeout.tv_sec = 1;
+
+        int ready = select(maxFd + 1, &readfds, nullptr, nullptr, &timeout);
+
+        if(ready<0){
+            perror("select failed oh no");
+            break;
+        }
+
+        if(ready == 0) {
+            // Timeout, can do periodic tasks here if needed.
+            continue;
+        }
+
+        if(FD_ISSET(tcpSock, &readfds)) {
+            uint8_t buffer[4096];
+            ssize_t n = recv(tcpSock, buffer, sizeof(buffer), 0);
+
+            if(n <= 0) {
+                cerr << "TCP connection closed or error\n";
                 break;
-            } else {
-                perror("TCP recv error");
+            }
+
+            tcpBuffer.insert(tcpBuffer.end(), buffer, buffer + n);
+
+            if(!processTcpFrames()) {
+                cerr << "Error processing TCP frames\n";
                 break;
             }
         }
-        tcpBuffer.insert(tcpBuffer.end(), buffer, buffer + n);
+        if(FD_ISSET(udpSock, &readfds)) {
+            receiveLsp();
+        }
 
-        if(!processTcpFrames()) break;
+        auto now = Clock::now();
+
+        if(haveConfig && now - lastLspTime >= LSP_INTERVAL) {
+            sendLsp();
+            lastLspTime = now;
+        }
+
+        if(now - lastPrintTime >= PRINT_INTERVAL) {
+            printGraph();
+            lastPrintTime = now;
+        }
     }
 
     close(tcpSock);
