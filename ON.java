@@ -288,6 +288,10 @@ public class ON {
     }
 
     static void sendAllLinkStates() {
+        if(!allConnected()){
+            ready = false;
+            return;
+        }
         for (int i = 0; i < nextId; i++) {
             try {
                 sendLinkState(i);
