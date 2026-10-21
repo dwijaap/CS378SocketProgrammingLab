@@ -34,8 +34,8 @@ static int myId = -1;
 static bool haveConfig = false;
 
 static map<int, Neighbor> neighbors;
-static array<map<int, int>, NODE_COUNT> graph; // again for LSP later
-static array<int64_t, NODE_COUNT> lastSeqNo; // again for LSP later
+static array<map<int, int>, NODE_COUNT> graph; 
+static array<int64_t, NODE_COUNT> lastSeqNoSent; 
 
 static uint32_t mySeq = 0;
 
@@ -88,7 +88,7 @@ void sendLsp() {
         graph[myId][id] = nb.cost;
     }
 
-    lastSeqNo[myId] = seq;
+    lastSeqNoSent[myId] = seq;
 
     for(const auto& [id, nb] : neighbors) {
         ssize_t send = sendto(
@@ -137,10 +137,10 @@ bool handleLsp(const uint8_t* packet, size_t len, const sockaddr_in& sender ) {
         return false;
     }
 
-    if (lastSeqNo[origin] >= static_cast<int64_t>(seq)) {
+    if (lastSeqNoSent[origin] >= static_cast<int64_t>(seq)) {
         // Already seen this or a newer LSP from this origin.
-    return false;
-}
+        return false;
+    }
 
     map<int, int> links;
     size_t pos = 6;
@@ -158,10 +158,10 @@ bool handleLsp(const uint8_t* packet, size_t len, const sockaddr_in& sender ) {
         links[id] = static_cast<int>(cost);
     }
 
-    lastSeqNo[origin] = seq;
+    lastSeqNoSent[origin] = seq;
     graph[origin] = links;
 
-    cout << "Updated LSP from " << char('A' + origin) << "\n";
+    cout << "Received LSP from " << char('A' + origin) << " and updated graph.\n";
 
     forwardLsp(packet, len, sender);
 
@@ -240,7 +240,7 @@ static void printGraph() { // For LSP later
     cout << "Current graph:" << endl;
 
     for(int i = 0; i < NODE_COUNT; ++i) {
-        if(lastSeqNo[i] < 0) continue;
+        if(lastSeqNoSent[i] < 0) continue;
 
         cout << char('A' + i) << ": ";
 
@@ -270,7 +270,7 @@ static void handleLinkState(const uint8_t* body, size_t len) {
     map<int, Neighbor> newNeighbors;
     int newMyId = -1; // should not change but message has it 
     size_t pos = 2; // start reading after type and count
-
+    
     for(int i = 0; i < count; i++){
         int id = body[pos++];
 
@@ -319,6 +319,10 @@ static void handleLinkState(const uint8_t* body, size_t len) {
     }
 
     myId = newMyId;
+    neighbors.clear();
+    for(int i = 0; i < graph.size(); i++){
+        graph[i].clear();
+    }
     neighbors = newNeighbors;
     haveConfig = true;
 
@@ -397,7 +401,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    for(auto & seq : lastSeqNo) seq = -1;
+    for(auto & seq : lastSeqNoSent) seq = -1;
 
     myPort = stoi(argv[3]);
 

@@ -15,18 +15,6 @@ public class ON {
     static final int TCP_PORT = 5000;
     static final int MAX_NODES = 26;
 
-    static class NodeInfo {
-        char id;
-        String ip;
-        int udpPort;
-
-        NodeInfo(char id, String ip, int udpPort) {
-            this.id = id;
-            this.ip = ip;
-            this.udpPort = udpPort;
-        }
-    }
-
     static class NodeConnection {
         SocketChannel channel;
         ByteBuffer inBuffer = ByteBuffer.allocate(4096);
