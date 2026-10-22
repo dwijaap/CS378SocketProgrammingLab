@@ -53,9 +53,10 @@ javac ON.java
 Run the Oracle Node with the configuration file:
 
 ```bash
-java ON config.txt
+java ON config.txt <ON_IP>
 ```
 
+The second argument is optional and if not supplied, the socket binds to the local host. If the IP supplied is bad and the server fails to bind, a message is displayed which tells us that the binding has failed and the socket by default binds to the local Host IP.
 The ON listens for incoming TCP connections on port `5000` (as mentioned in the assignment). Start it before launching the VNs (you can start it after launching VNs as well, provided you know the IP address of ON).
 
 ### 2. Compile the Virtual Node
@@ -101,7 +102,7 @@ Start the number of VNs specified by `config.txt` (or greater than that due to i
 
 The output depends on the configured topology.
 
-### Running the Program using run.sh
+### Running the Program using run.sh (on same machine using WSL)
 
 Run the script using `bash run.sh` from the assignment directory. The script compiles `ON.java` and `VN.cpp`, starts the Oracle Node, and prompts you to enter the number of Virtual Nodes along with each VN's IP address and UDP port. It automatically configures any missing local IP aliases required by the VNs and launches each Virtual Node. The output of the Oracle Node and each Virtual Node is saved separately in the `logs/` directory (`on.log`, `vnA.log`, `vnB.log`, etc.). Enter `exit` in the terminal or press `Ctrl+C` to stop the program; the script terminates the launched processes and removes any IP aliases it added.
 

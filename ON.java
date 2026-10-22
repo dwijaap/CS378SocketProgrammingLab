@@ -8,8 +8,6 @@ import java.nio.channels.SocketChannel;
 import java.nio.file.*;
 import java.util.*;
 
-import org.w3c.dom.Node;
-
 public class ON {
 
     static final int TCP_PORT = 5000;
@@ -31,6 +29,7 @@ public class ON {
 
     static int[][] graph = new int[MAX_NODES][MAX_NODES];
     static int nodeCount;
+    static int allNodeCount;
     static NodeConnection[] connections = new NodeConnection[MAX_NODES];
     static long configChanged = 0;
     static int nextId = 0;
@@ -38,12 +37,18 @@ public class ON {
 
     public static void main(String[] args) throws Exception {
 
-        if (args.length != 1) {
-            System.out.println("Give config file name as input!");
+        if (args.length < 1 || args.length > 2) {
+            System.out.println("Usage: java ON <config_file> [ON_IP]");
             return;
         }
 
+        String bindIP = null;
         String configFile = args[0];
+
+        if (args.length == 2) {
+            bindIP = args[1];
+        }
+
         readConfig(configFile);
         configChanged = Files.getLastModifiedTime(Paths.get(configFile)).toMillis();
         System.out.println("Config File read");
@@ -54,7 +59,18 @@ public class ON {
         Selector sel = Selector.open();
         ServerSocketChannel server = ServerSocketChannel.open();
         server.setOption(StandardSocketOptions.SO_REUSEADDR, true);
-        server.bind(new InetSocketAddress(TCP_PORT), 30);
+
+        if (bindIP != null) {
+            try {
+                server.bind(new InetSocketAddress(bindIP, TCP_PORT), 30);
+            } catch (Exception e) {
+                System.out.println("Provided IP for ON is not valid, so binding to the local Host IP!!!!");
+                server.bind(new InetSocketAddress(localAddress, TCP_PORT), 30);
+            }
+        }
+        else{
+            server.bind(new InetSocketAddress(localAddress, TCP_PORT), 30);
+        }
         server.configureBlocking(false);
         server.register(sel, SelectionKey.OP_ACCEPT);
 
@@ -96,7 +112,7 @@ public class ON {
                 server.close();
             }
             sel.close();
-            for (int i = 0; i < nodeCount; i++) {
+            for (int i = 0; i < allNodeCount; i++) {
                 if (connections[i].channel != null)
                     connections[i].channel.close();
             }
@@ -119,6 +135,7 @@ public class ON {
         connections[nextId].id = (char) (nextId + 'A');
         connections[nextId].key = ch.register(sel, SelectionKey.OP_READ, connections[nextId]);
 
+        allNodeCount++;
         if (nextId < nodeCount) {
             System.out.println("TCP Connection accepted for " + (char) (nextId + 'A') + ".");
         } else {
@@ -184,9 +201,9 @@ public class ON {
         connections[nc.id - 'A'] = null;
     }
 
-    static boolean allConnected(){
-        for(int i = 0 ; i<nodeCount ; i++){
-            if(connections[i]==null || connections[i].conn == false)
+    static boolean allConnected() {
+        for (int i = 0; i < nodeCount; i++) {
+            if (connections[i] == null || connections[i].conn == false)
                 return false;
         }
         return true;
@@ -231,15 +248,23 @@ public class ON {
     }
 
     static void printGraph() {
-        System.out.println();
-
         System.out.println("Current Graph:");
 
-        for (int i = 0; i < nodeCount; i++) {
+        int i = 0;
+        for (; i < nodeCount; i++) {
             for (int j = i + 1; j < nodeCount; j++) {
-                System.out.println((char) ('A' + i) + "->" + (char) ('A' + j) + " = " + graph[i][j] + "\t");
+                System.out.print((char) ('A' + i) + "->" + (char) ('A' + j) + " = " + graph[i][j] + "\t");
             }
             System.out.println();
+        }
+
+        if (nodeCount == 1) {
+            System.out.println("A -> isolated node");
+        }
+
+        for (; i < allNodeCount; i++) {
+            if (connections[i] != null && connections[i].conn == true)
+                System.out.println((char) ('A' + i) + " -> isolated node");
         }
     }
 
@@ -275,13 +300,16 @@ public class ON {
     }
 
     static void sendAllLinkStates() {
-        if(!allConnected()){
+        if (!allConnected()) {
             ready = false;
             return;
         }
-        for (int i = 0; i < nextId; i++) {
+        for (int i = 0; i < allNodeCount; i++) {
             try {
-                sendLinkState(i);
+                if (i < nodeCount)
+                    sendLinkState(i);
+                else if (connections[i].conn)
+                    sendLinkState(i);
             } catch (IOException e) {
                 System.out.println("Failed to send Link State to " + (char) ('A' + i));
             }
@@ -326,7 +354,7 @@ public class ON {
         buf.put(msg);
         buf.flip();
 
-        while(buf.hasRemaining()){
+        while (buf.hasRemaining()) {
             nc.channel.write(buf);
         }
 

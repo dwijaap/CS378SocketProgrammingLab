@@ -21,17 +21,17 @@ cleanup() {
     echo
     echo "Stopping all Virtual Nodes and the Oracle Node..."
 
-    # Stop all VNs started by this script.
+    # Stop all VNs
     for pid in "${VN_PIDS[@]}"; do
         kill -TERM "$pid" 2>/dev/null || true
     done
 
-    # Stop the ON.
+    # Stop the ON
     if [[ -n "$ON_PID" ]]; then
         kill -TERM "$ON_PID" 2>/dev/null || true
     fi
 
-    # Wait for processes to terminate.
+    # Wait for processes to terminate
     for pid in "${VN_PIDS[@]}"; do
         wait "$pid" 2>/dev/null || true
     done
@@ -40,7 +40,7 @@ cleanup() {
         wait "$ON_PID" 2>/dev/null || true
     fi
 
-    # Remove only the IP aliases added by this script.
+    # Remove only the IP aliases added by us
     for ip in "${ADDED_IPS[@]}"; do
         echo "Removing temporary IP $ip from $IFACE..."
         sudo ip addr del "$ip/32" dev "$IFACE" 2>/dev/null || true
@@ -77,14 +77,91 @@ if ! g++ -std=c++17 -Wall -Wextra VN.cpp -o vn; then
     exit 1
 fi
 
+
 # --------------------------------------------------
-# 2. Get VN configurations
+# 2. Get optional ON IP and start Oracle Node
+# --------------------------------------------------
+
+read -rp "ON IP address (press Enter to auto-detect): " ON_BIND_IP
+
+: > ./logs/on.log
+
+echo
+echo "Starting Oracle Node..."
+
+if [[ -n "$ON_BIND_IP" ]]; then
+    java ON config.txt "$ON_BIND_IP" > ./logs/on.log 2>&1 &
+else
+    java ON config.txt > ./logs/on.log 2>&1 &
+fi
+
+ON_PID=$!
+
+# Wait for ON to print its IPv4 address
+ON_IP=""
+
+for ((i = 0; i < 30; i++)); do
+    if ! kill -0 "$ON_PID" 2>/dev/null; then
+        echo "Oracle Node exited unexpectedly:"
+        cat ./logs/on.log
+        exit 1
+    fi
+
+    ON_IP=$(sed -nE \
+        's/.*ON IP:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+).*/\1/p' \
+        ./logs/on.log | head -n 1)
+
+    if [[ -n "$ON_IP" ]]; then
+        break
+    fi
+
+    sleep 1
+done
+
+if [[ -z "$ON_IP" ]]; then
+    echo "Could not detect ON IP from ./logs/on.log."
+    cat ./logs/on.log
+    exit 1
+fi
+
+echo "Oracle Node IP detected: $ON_IP"
+
+# --------------------------------------------------
+# 3. Get VN configurations
 # --------------------------------------------------
 
 read -rp "Number of VNs to launch (1-26): " N
 
 if ! [[ "$N" =~ ^[1-9][0-9]*$ ]] || (( N > 26 )); then
     echo "Enter a number between 1 and 26."
+    exit 1
+fi
+
+# Wait until ON prints the number of configured nodes to confirm 
+# whether the no.of nodes entered by user is >= config file nodes read
+# by the ON
+CONFIG_NODES=""
+
+for ((i = 0; i < 30; i++)); do
+    CONFIG_NODES=$(grep -oE 'Number of nodes in config file:[[:space:]]*[0-9]+' ./logs/on.log \
+        | head -n 1 | grep -oE '[0-9]+')
+
+    if [[ -n "$CONFIG_NODES" ]]; then
+        break
+    fi
+
+    sleep 1
+done
+
+if [[ -z "$CONFIG_NODES" ]]; then
+    echo "Error: Could not read the number of nodes from ON output."
+    cat ./logs/on.log
+    exit 1
+fi
+
+if (( CONFIG_NODES > N )); then
+    echo "Error: config.txt contains $CONFIG_NODES nodes, but you entered only $N nodes."
+    echo "Please enter at least $CONFIG_NODES nodes."
     exit 1
 fi
 
@@ -116,7 +193,7 @@ for ((i = 0; i < N; i++)); do
 done
 
 # --------------------------------------------------
-# 3. Determine the network interface
+# 4. Determine the network interface
 # --------------------------------------------------
 
 IFACE=$(ip route show default | awk 'NR == 1 {print $5}')
@@ -131,7 +208,7 @@ echo
 echo "Using network interface: $IFACE"
 
 # --------------------------------------------------
-# 4. Ensure every VN IP is assigned locally
+# 5. Ensure every VN IP is assigned locally
 # --------------------------------------------------
 
 for ((i = 0; i < N; i++)); do
@@ -151,7 +228,7 @@ for ((i = 0; i < N; i++)); do
     else
         echo "IP $ip is not assigned. Adding $ip/32 to $IFACE..."
 
-        # sudo may prompt for your password.
+        # sudo asks for password 
         if ! sudo ip addr add "$ip/32" dev "$IFACE"; then
             echo "Failed to add IP $ip."
             exit 1
@@ -163,51 +240,6 @@ for ((i = 0; i < N; i++)); do
 done
 
 # --------------------------------------------------
-# 5. Start Oracle Node
-# --------------------------------------------------
-
-: > ./logs/on.log
-
-echo
-echo "Starting Oracle Node..."
-
-java ON config.txt > ./logs/on.log 2>&1 &
-ON_PID=$!
-
-# Wait for ON to print its IPv4 address.
-# Expected format: ON IP: 192.168.1.10
-
-ON_IP=""
-
-for ((i = 0; i < 30; i++)); do
-    if ! kill -0 "$ON_PID" 2>/dev/null; then
-        echo "Oracle Node exited unexpectedly:"
-        cat ./logs/on.log
-        exit 1
-    fi
-
-    ON_IP=$(sed -nE \
-        's/.*ON IP:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+).*/\1/p' \
-        ./logs/on.log | head -n 1)
-
-    if [[ -n "$ON_IP" ]]; then
-        break
-    fi
-
-    sleep 1
-done
-
-if [[ -z "$ON_IP" ]]; then
-    echo "Could not detect ON IP from on.log."
-    echo "Expected: ON IP: <IPv4 address>"
-    echo "Check whether on.java prints its IP."
-    cat ./logs/on.log
-    exit 1
-fi
-
-echo "Oracle Node IP detected: $ON_IP"
-
-# --------------------------------------------------
 # 6. Launch each VN with a separate log file
 # --------------------------------------------------
 
@@ -216,7 +248,7 @@ for ((i = 0; i < N; i++)); do
 
     LOG_FILE="./logs/vn${NODE_LETTER}.log"
 
-    # Truncate old logs.
+    # Truncate old logs
     : > "$LOG_FILE"
 
     echo "Starting VN $NODE_LETTER..."

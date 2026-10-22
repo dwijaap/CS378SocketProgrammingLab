@@ -320,7 +320,7 @@ static void handleLinkState(const uint8_t* body, size_t len) {
 
     myId = newMyId;
     neighbors.clear();
-    for(int i = 0; i < graph.size(); i++){
+    for(int i = 0; i < (int)graph.size(); i++){
         graph[i].clear();
     }
     neighbors = newNeighbors;
