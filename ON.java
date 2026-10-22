@@ -47,7 +47,7 @@ public class ON {
         readConfig(configFile);
         configChanged = Files.getLastModifiedTime(Paths.get(configFile)).toMillis();
         System.out.println("Config File read");
-        System.out.println("Number of nodes: " + nodeCount);
+        System.out.println("Number of nodes in config file: " + nodeCount);
 
         InetAddress localAddress = InetAddress.getLocalHost();
 
@@ -58,7 +58,7 @@ public class ON {
         server.configureBlocking(false);
         server.register(sel, SelectionKey.OP_ACCEPT);
 
-        System.out.println("Server Info:\nTCP Port: " + TCP_PORT + "\nIP: " + localAddress.getHostAddress());
+        System.out.println("ON TCP Port: " + TCP_PORT + "\nON IP: " + localAddress.getHostAddress());
 
         try {
             while (true) {
