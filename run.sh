@@ -46,6 +46,9 @@ cleanup() {
         sudo ip addr del "$ip/32" dev "$IFACE" 2>/dev/null || true
     done
 
+    rm *.class
+    rm vn
+
     echo "All processes stopped."
     echo "ON log: ./logs/on.log"
     echo "VN logs: ./logs/vnA.log, ./logs/vnB.log, ..."
