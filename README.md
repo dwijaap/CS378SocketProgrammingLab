@@ -101,6 +101,10 @@ Start the number of VNs specified by `config.txt` (or greater than that due to i
 
 The output depends on the configured topology.
 
+### Running the Program using run.sh
+
+Run the script using `bash run.sh` from the assignment directory. The script compiles `ON.java` and `VN.cpp`, starts the Oracle Node, and prompts you to enter the number of Virtual Nodes along with each VN's IP address and UDP port. It automatically configures any missing local IP aliases required by the VNs and launches each Virtual Node. The output of the Oracle Node and each Virtual Node is saved separately in the `logs/` directory (`on.log`, `vnA.log`, `vnB.log`, etc.). Enter `exit` in the terminal or press `Ctrl+C` to stop the program; the script terminates the launched processes and removes any IP aliases it added.
+
 ## Troubleshooting
 
 - **Connection refused:** Ensure that the ON is running and that `ON_IP` is correct.
