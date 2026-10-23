@@ -63,6 +63,7 @@ public class ON {
         if (bindIP != null) {
             try {
                 server.bind(new InetSocketAddress(bindIP, TCP_PORT), 30);
+                localAddress = InetAddress.getByName(bindIP);
             } catch (Exception e) {
                 System.out.println("Provided IP for ON is not valid, so binding to the local Host IP!!!!");
                 server.bind(new InetSocketAddress(localAddress, TCP_PORT), 30);
